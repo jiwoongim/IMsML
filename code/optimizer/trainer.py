@@ -6,7 +6,9 @@ from collections import deque
 from utils.utils import decode_seq, prepare_data
 from utils.tf_utils import last_relevant 
 
-class Trainer(object):
+
+"""More like a template"""
+class Seq2Seq_Trainer(object):
     
 
     def __init__(self, tr_config, model_config):

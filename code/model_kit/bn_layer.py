@@ -76,7 +76,7 @@ class BNLayer(object):
 
 
 
-
+""" Just functional version """
 def bn(x, use_biasF=False):
     x_shape = x.get_shape()
     params_shape = x_shape[-1:]
