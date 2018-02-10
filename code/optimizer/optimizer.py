@@ -26,3 +26,19 @@ class Optimizer(object):
         return self.apply_gradients(gradients)
 
 
+    def min_func(self, model):
+
+        gradients = self.compute_gradients(model.J)
+        for i, (grad, var) in enumerate(gradients):
+            if grad is not None:
+                gradients[i] = (tf.clip_by_norm(grad, 5), var)
+
+        # Add histograms for gradients.
+        for grad, var in gradients:
+            tf.histogram_summary(var.name, var)
+            if grad is not None:
+                tf.histogram_summary(var.name + '/gradients', grad)
+
+        return self.apply_gradients(gradients)
+
+

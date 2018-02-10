@@ -56,7 +56,7 @@ class Layer(object):
             return Layer(self.D, self.M, self.atype, scope_name=sc)
 
 
-    def propagate(self, X, atype=None):
+    def fp(self, X, atype=None):
         '''Forward propagation'''
 
         if atype is None : atype = self.atype

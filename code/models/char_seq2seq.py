@@ -88,84 +88,33 @@ class CHAR_SEQ2SEQ(BaseModel):
             #TODO: consider outputting error 
             return self.fp(X)
 
-    def cost(self, X, Y, Hts_init=None, Ots_init=None, batch_sz=None, lam=0.0005):
-      
-        if batch_sz is None: batch_sz = self.batch_sz 
-        if Hts_init is None: Hts_init, Ots_init = self._init_states(Ots_init)
-        if num_steps is None: num_steps = self.TT 
 
-        preds, logits, _, _ = self.fp(X, Hts_init, Ots_init)
-
-        ## Measured based on perplexity - measures how surprised the network
-        ## is to see the next character in a sequence.
-        loss        = tf.nn.seq2seq.sequence_loss_by_example(logits,
-                       [tf.reshape(Y, [-1])],
-                       [tf.ones([batch_sz * self.TT])],
-                       self.vocab_sz)
-    
-        cost = tf.reduce_sum(loss) / batch_sz / self.TT
-        l2_loss = tf.add_n([tf.nn.l2_loss(v) \
-                        for v in tf.trainable_variables()])
-
-        with tf.variable_scope('summary'):
-            tf.histogram_summary("prediction_error", preds)
-            tf.scalar_summary("Cost", cost)
-            self.summarize = tf.merge_all_summaries() 
-
-        return cost + lam * l2_loss
-
-    
-    def cost(self, X, Y, XXM, YYM, batch_sz=None, num_steps=None, lam=0.0005):
-        ''' Returns loss
-                X - source indice
-                Y - target indice
-                
-                Note that number of batch size is not fixed per update'''
-
-        
-        if batch_sz is None : batch_sz = tf.shape(Y)[0]
-        if num_steps is None: num_steps = self.TT 
-
-        preds, logits, _ = self.fp(X, XXM, batch_sz, \
-                    num_fsteps=num_steps, num_bsteps=num_steps)
-
-        ## Measured based on perplexity - measures how surprised the network
-        ## is to see the next character in a sequence.
-        loss    = tf.nn.seq2seq.sequence_loss_by_example(logits,
-                       [tf.reshape(Y, [-1])],
-                       [tf.ones([batch_sz * num_steps])],
-                       self.vocab_sz)
-  
-        Y_len   = tf.cast(tf.reduce_sum(YYM, 1), 'float32')
-        cost    = tf.reduce_sum(loss * YYM, 1) / Y_len / tf.to_float(batch_sz)
-        #l2_loss = tf.add_n([tf.nn.l2_loss(v) \
-        #                for v in tf.trainable_variables()])
-
-        with tf.variable_scope('summary'):
-            tf.histogram_summary("prediction_error", preds)
-            tf.scalar_summary("Cost", cost)
-            self.summarize = tf.merge_all_summaries() 
-
-        return cost #+ lam * l2_loss
-
-   
-    def encoder_fp(self, X, Hts, Ots=None, num_steps=None):
+    def encoder(self, X, batch_sz, num_steps=None):
 
         if num_steps is None: num_steps = self.TT 
 
-        Yts, Cts = [], []
+        #Encoder pass
+        E       = self.embed_layer.fp(X)
+        Hts_enc = self._init_states(self.encoder, batch_sz)
+        Hts_enc = self.estep(E, Hts_enc, num_steps)
+        return Hts_enc
+
+
+    def estep(self, E, Hs, num_esteps=None):
+
+        if num_esteps is None: num_esteps = self.TT 
+
+        Oi = tf.transpose(E, perm=[1,0,2])
         with tf.variable_scope(self.scope_name):
+            for i in xrange(len(self.encoder)):
+            
+                Hi = Hs[i]
+                Oi = self.encoder[i].propagate(Oi, h0=Hi,\
+                                     n_steps=tf.cast(num_esteps, 'int32'))
+            return Oi
 
-            for t in xrange(num_steps):
-                
-                Xt = X[:,t]
-                Et = self.embed_layer.fp(Xt)
-                Hts, Ots = self.step(Et, Hts, Ots, t)
 
-            return Hts, Ots
-   
-
-    def decoder_fp(self, Ct, Hts, Ots=None, num_steps=None):
+    def decoder(self, predt, Hts, Ots=None, num_steps=None, scanF=False):
         """ Decoder RNN 
             S           - Summary vector
             Hts, Ots    - initial state of the RNN
@@ -175,140 +124,49 @@ class CHAR_SEQ2SEQ(BaseModel):
 
         with tf.variable_scope(self.scope_name):
 
-            for t in xrange(num_steps):
+            if scanF:
+                O10, O20 = Hts
+                def decode_t(ctm1, h10, h20):
 
-                Et = self.embed_layer.fp(Ct)
-                Hts, Ots = self.step(Et, Hts, Ots, t)
-                Ct = self.get_character(Hts[-1][-1], stype='argmax')
+                    Et = self.embed_layer.fp(ctm1)
+                    O1t = self.decoder[0].propagate(Et , n_steps=1, h0=h10)
+                    O2t = self.decoder[1].propagate(O1t, n_steps=1, h0=h20)
+                    predt = self.pred_layer.propagate(O2t, atype='softmax')
+                    return predt, O1t, O2t
 
-            YYY     = tf.reshape(tf.concat(1, Hts[-1]), [-1, self.num_hids[-2]])
-            logits  = self.softmax_layer.get_logit(YYY)
-            preds   = tf.nn.softmax(logits)
+                [preds, Hts1, Hts2], updates=tf.scan(decode_t,
+                                          outputs_info = [C0, O10, O20],
+                                          n_steps=tf.cast(num_steps, dtype='int32'))
+            else:
+                O1t, O2t = Hts
+                preds = []
+                for t in xrange(num_steps):
 
-            return preds, [logits], Hts
-
-
-    def step(self, Et, Hts, Ots, tt):
-
-        Ot = Et
-        for i in xrange(len(self.encoder)):
-        
-            Ht = Hts[i][-1]
-            Ot, Ht = self.encoder[i].fp(Ot, Ht)
-
-            Ots[i].append(Ot)
-            Hts[i].append(Ht)
-
-        return Hts, Ots
+                    Et = self.embed_layer.fp(predt)
+                    O1t = self.decoder[0].propagate(Et , n_steps=1, h0=O1t)
+                    O2t = self.decoder[1].propagate(O1t, n_steps=1, h0=O2t)
+                    pred = self.softmax_layer.propagate(O2t, atype='softmax')
+                    preds.append(predt)
+                preds = tf.pack(preds)
+            return preds
 
 
-    def fp(self, X, batch_sz, num_fsteps, num_bsteps):
+    def fp(self, X, batch_sz, num_esteps, num_dsteps):
+
+        if num_esteps is None: num_esteps = self.TT 
+        if num_dsteps is None: num_dsteps = self.TT 
 
         #Encoder pass
-        Hts_enc, Ots_enc = self._init_states(batch_sz, num_fsteps)
-        Hts_enc, Ots_enc = self.encoder_fp(X, Hts_enc, \
-                                    Ots_enc, num_steps=num_fsteps)
-
-        #Decoder hidden initialization
-        #TODO : Unsure about whether i should subtract by -1 or -2
-        #       to compute the last index.
         Hts_dec, Ots_dec = [],[]
-        last_indice = tf.cast(tf.reduce_sum(XXM, 1)-1, 'int32')
-
-        for i in xrange(len(Hts_enc)):
-
-            Hts = tf.pack(Hts_enc[i])
-            Ots = tf.pack(Ots_enc[i])
-            Hts_init = last_relevant(Hts, last_indice)
-            Ots_init = last_relevant(Ots, last_indice)
-
-            Hts_dec.append([Hts_init])
-            Ots_dec.append([Ots_init])
+        Hts_dec_init = self.encoder(X, batch_sz, num_steps=num_esteps)
+        Hts_dec      = self._init_states(self.decoder, batch_sz)
+        Hts_dec.pop(0)
+        Hts_dec.insert(0, Hts_dec_init)
 
         #Decoder pass
-        C0 = self.get_character(Hts_init, stype='argmax')
-        pred, logits, Zts = self.decoder_fp(C0, Hts_dec, \
-                                    Ots=Ots_dec, num_steps=num_bsteps)
+        #C0 = last_relevant2D(X, last_indice)
+        pred0 = tf.constant(np.ones((tr_config['batch_sz'],), dtype='int32'))
+        pred = self.decoder(pred0, Hts_dec, num_steps=num_dsteps)
 
-        return pred, logits, Zts
-
-    def get_character(self, Ht, stype='argmax'):
-        """stype - sample type, either 'argmax' | 'multinomial' """
-
-
-        #Get prediction
-        pred    = self.softmax_layer.fp(Ht)
-       
-        #Sample a character
-        if stype == 'multinomial':
-            pred = tf.multinomial(pred, 1, seed=1234, name=None)
-        
-        sample_char = tf.argmax(pred, 1)
-        symbol  = tf.stop_gradient(sample_char)
- 
-        return symbol
-
-
-    def get_fp_embedding(self, X, _):
-
-        pred    = self.softmax_layer.fp(X)
-        symbol  = tf.stop_gradient(tf.argmax(pred, 1))
-
-        return self.embed_layer.fp(symbol)
-
-
-    def get_context(self, X, Hts_init=None, Ots_init=None, num_steps=None):
-        """
-        Returns the last hidden representation H_T (feature) of the RNN 
-        with input X = {x_1, ..., x_T}
-
-        Note that lstm layer returns two item, ouputs Ots and hiddens Hts,
-        where as RNN returns one item, hiddens Hts (outputs and hiddens are the same).
-        Hence, argument Ots is an option when lstm layer is used.
-        """
-
-        if num_steps is None: num_steps = self.TT 
-        if Hts_init is None: Hts_init, Ots_init = self._init_states('bilstm')
-
-        Ht, Hts, Ots  = self.encoder_fp(X, Hts_init, Ots=Ots_init, num_steps=num_steps)
-        C0 = self.get_character(Ht, stype='argmax')
-        return C0, Hts, Ots 
-
-
-    def sample(self, C0, num_steps, Hts=None, Ots=None, stype='argmax'):
-        """Generates text
-            S           - summary variable
-            num_steps   - number of total character generated 
-            Hts, Ots    - is dummy variable. Needed this to synchronize 
-            with sample method in char_rnn.py """
-
-        #TODO : At test time, the prediction is currently done iteratively 
-        #character by character in a greedy fashion, but eventually needs to be
-        #implemented more sophisticated methods (e.g. beam search).
-        _, _, Yts = self.decoder_fp(C0, Hts, Ots=Ots, num_steps=num_steps)
-
-        char_inds = []
-        for yt in Yts:
-            ct = self.get_character(yt, stype=stype)
-            char_inds.append(ct)
-
-        return char_inds
-
-
-    def _init_states(self, batch_sz, num_steps):
-
-        Hts, Ots = [], []
-        for i in xrange(1, self.num_layers-1):
-            Hts.append([tf.zeros([batch_sz, self.num_hids[i]])])
-            Ots.append([tf.zeros([batch_sz, self.num_hids[i]])])
-
-        return Hts, Ots
-                
-                
-    def clone(self, new_scope_name=None):
-
-        #TODO
-        pass
-
-
+        return pred
 

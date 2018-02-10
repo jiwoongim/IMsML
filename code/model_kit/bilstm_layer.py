@@ -1,8 +1,9 @@
 import math
 import tensorflow as tf
 
+from tensorflow.contrib import rnn
 from utils.nn_utils import init_weights
-from model_kits.lstm_layer import LSTMLayer
+from model_kit.lstm_layer import LSTMLayer
 
 
 class BiLSTMLayerTF(object):
@@ -17,8 +18,11 @@ class BiLSTMLayerTF(object):
         self.scope_name = scope_name
 
         # Define lstm cells with tensorflow
-        self.flstm = rnn.BasicLSTMCell(M, forget_bias=1.0)
-        self.blstm = rnn.BasicLSTMCell(M, forget_bias=1.0)
+        with tf.variable_scope(self.scope_name+'_forward') as scope:     
+            self.flstm = rnn.BasicLSTMCell(M, forget_bias=1.0)
+        with tf.variable_scope(self.scope_name+'_forward') as scope:     
+            self.blstm = rnn.BasicLSTMCell(M, forget_bias=1.0)
+
         self.bilstm = [self.flstm, self.blstm]
         self.params = self.flstm.variables + self.blstm.variables
 
@@ -42,22 +46,23 @@ class BiLSTMLayerTF(object):
 
 
     def fp(self, X):
-        '''Forward propagation'''
 
+        '''Forward propagation'''
         # Get lstm cell output
-        try:
-            outputs, _, _ = rnn.static_bidirectional_rnn(\
-                                                self.flstm, \
-                                                self.blstm, \
-                                                X,
-                                                dtype=tf.float32)
-        except Exception: # Old TensorFlow version only returns outputs not states
-            print 'Using Old version Tensorflow BiLSTM'
-            outputs = rnn.static_bidirectional_rnn( self.flstm, \ 
-                                                    self.blstm, \ 
-                                                    X, \
+        with tf.variable_scope(self.scope_name) as scope:     
+            try:
+                outputs, _, _ = rnn.static_bidirectional_rnn(\
+                                                    self.flstm, \
+                                                    self.blstm, \
+                                                    X,
                                                     dtype=tf.float32)
-        return outputs
+            except Exception: # Old TensorFlow version only returns outputs not states
+                print 'Using Old version Tensorflow BiLSTM'
+                outputs = rnn.static_bidirectional_rnn( self.flstm, \
+                                                        self.blstm, \
+                                                        X, \
+                                                        dtype=tf.float32)
+            return outputs
 
 
 
